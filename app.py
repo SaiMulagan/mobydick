@@ -1,6 +1,6 @@
 import mlflow.pyfunc
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 mlflow_uri = "http://34.134.157.206:5000"
 model_uri = "models:/BookRecommender/Production"
