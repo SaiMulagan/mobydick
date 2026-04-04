@@ -17,7 +17,7 @@ model = None
 @app.on_event("startup")
 def load_model():
     global model
-    model = mlflow.pyfunc.load_model(model_uri)
+    #model = mlflow.pyfunc.load_model(model_uri)         We don't have a model yet
 
 
 class request_body(BaseModel):
