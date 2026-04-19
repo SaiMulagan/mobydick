@@ -2,3 +2,5 @@ fastapi
 uvicorn
 mlflow
 pydantic
+pytest
+httpx
