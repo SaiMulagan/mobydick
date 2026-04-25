@@ -1,6 +1,6 @@
 import mlflow.pyfunc
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 mlflow_uri = "http://34.134.157.206:5000"
 model_uri = "models:/BookRecommender/Production"
@@ -17,7 +17,7 @@ model = None
 @app.on_event("startup")
 def load_model():
     global model
-    model = mlflow.pyfunc.load_model(model_uri)
+    # model = mlflow.pyfunc.load_model(model_uri)
 
 
 class request_body(BaseModel):
