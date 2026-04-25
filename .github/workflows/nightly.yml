@@ -1,0 +1,34 @@
+name: Nightly Tests
+
+on:
+  schedule:
+    - cron: "0 6 * * *"  # 2 AM ET / 11 PM PT — runs after midnight on the west coast
+  workflow_dispatch:      # lets you trigger a run manually from the Actions tab
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install fastapi httpx pydantic pytest
+          pip install -r requirements.txt
+
+      - name: Run nightly tests
+        run: pytest test_nightly.py -v --tb=short
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Nightly tests failed — check the test output above."
