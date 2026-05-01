@@ -58,10 +58,6 @@ fi
 # ----------------------------------------------------------------------------
 LOCAL_FILES=(
     "goodreads_books.json"
-    "goodreads_book_authors.json"
-    "goodreads_interactions.csv"
-    "book_id_map.csv"
-    "user_id_map.csv"
 )
 
 UPLOAD_LIST=()
@@ -139,18 +135,6 @@ BOOKS_STAGE_SCHEMA='[
   {"name":"title_without_series","type":"STRING"}
 ]'
 
-AUTHORS_STAGE_SCHEMA='[
-  {"name":"author_id","type":"STRING"},
-  {"name":"name","type":"STRING"},
-  {"name":"average_rating","type":"STRING"},
-  {"name":"text_reviews_count","type":"STRING"},
-  {"name":"ratings_count","type":"STRING"}
-]'
-
-INTERACTIONS_SCHEMA='user_id:INT64,book_id:INT64,is_read:INT64,rating:INT64,is_reviewed:INT64'
-BOOK_ID_MAP_SCHEMA='book_id_csv:INT64,book_id:STRING'
-USER_ID_MAP_SCHEMA='user_id_csv:INT64,user_id:STRING'
-
 # ----------------------------------------------------------------------------
 # Helper: load a table from a GCS object (only if the object exists)
 # ----------------------------------------------------------------------------
@@ -180,14 +164,13 @@ load_table() {
 # Write the JSON schemas to temp files (bq load wants @file for JSON schemas)
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
-echo "$BOOKS_STAGE_SCHEMA"   > "$TMP_DIR/books.schema.json"
-echo "$AUTHORS_STAGE_SCHEMA" > "$TMP_DIR/authors.schema.json"
+echo "$BOOKS_STAGE_SCHEMA" > "$TMP_DIR/books.schema.json"
 
 # ----------------------------------------------------------------------------
-# Loads
+# Load
 #
-# JSON sources land in _stage_* tables (all STRING); the canonical typed
-# `books` and `authors` tables are built from them further below.
+# The JSON source lands in a _stage_books table (all STRING); the canonical
+# typed `books` table is built from it further below.
 # ----------------------------------------------------------------------------
 load_table "_stage_books" \
     "NEWLINE_DELIMITED_JSON" \
@@ -195,37 +178,13 @@ load_table "_stage_books" \
     "$TMP_DIR/books.schema.json" \
     "--max_bad_records=100 --ignore_unknown_values"
 
-load_table "_stage_authors" \
-    "NEWLINE_DELIMITED_JSON" \
-    "$BUCKET/$GCS_PREFIX/goodreads_book_authors.json" \
-    "$TMP_DIR/authors.schema.json" \
-    "--max_bad_records=100 --ignore_unknown_values"
-
-load_table "interactions" \
-    "CSV" \
-    "$BUCKET/$GCS_PREFIX/goodreads_interactions.csv" \
-    "$INTERACTIONS_SCHEMA" \
-    "--skip_leading_rows=1"
-
-load_table "book_id_map" \
-    "CSV" \
-    "$BUCKET/$GCS_PREFIX/book_id_map.csv" \
-    "$BOOK_ID_MAP_SCHEMA" \
-    "--skip_leading_rows=1"
-
-load_table "user_id_map" \
-    "CSV" \
-    "$BUCKET/$GCS_PREFIX/user_id_map.csv" \
-    "$USER_ID_MAP_SCHEMA" \
-    "--skip_leading_rows=1"
-
 # ----------------------------------------------------------------------------
-# Build the canonical typed tables from the staging tables.
+# Build the canonical typed `books` table from the staging table.
 #
 # SAFE_CAST turns empty strings / malformed values into NULL instead of
-# failing the whole query. After this step the staging tables and the legacy
-# v_books / v_authors views (from earlier versions of this script) are
-# dropped so there is exactly one source of truth per entity.
+# failing the whole query. After this step the staging table and any legacy
+# tables/views from earlier versions of this script are dropped so there is
+# exactly one source of truth.
 # ----------------------------------------------------------------------------
 echo "[table] creating typed $DATASET.books"
 bq --location="$LOCATION" query --use_legacy_sql=false --quiet \
@@ -267,29 +226,22 @@ bq --location="$LOCATION" query --use_legacy_sql=false --quiet \
        SAFE_CAST(LOWER(is_ebook)    AS BOOL)    AS is_ebook
      FROM \`$PROJECT_ID.$DATASET._stage_books\`"
 
-echo "[table] creating typed $DATASET.authors"
-bq --location="$LOCATION" query --use_legacy_sql=false --quiet \
-    "CREATE OR REPLACE TABLE \`$PROJECT_ID.$DATASET.authors\` AS
-     SELECT
-       author_id,
-       name,
-       SAFE_CAST(average_rating     AS FLOAT64) AS average_rating,
-       SAFE_CAST(ratings_count      AS INT64)   AS ratings_count,
-       SAFE_CAST(text_reviews_count AS INT64)   AS text_reviews_count
-     FROM \`$PROJECT_ID.$DATASET._stage_authors\`"
-
 # ----------------------------------------------------------------------------
-# Clean up: drop staging tables and any legacy v_* views from prior runs.
+# Clean up the staging table and any tables/views from earlier versions of
+# this script that referenced files no longer used by the codebase.
 # ----------------------------------------------------------------------------
-echo "[cleanup] dropping staging tables and legacy views"
+echo "[cleanup] dropping staging table and legacy artifacts"
 bq --location="$LOCATION" query --use_legacy_sql=false --quiet \
     "DROP TABLE IF EXISTS \`$PROJECT_ID.$DATASET._stage_books\`;
      DROP TABLE IF EXISTS \`$PROJECT_ID.$DATASET._stage_authors\`;
+     DROP TABLE IF EXISTS \`$PROJECT_ID.$DATASET.authors\`;
+     DROP TABLE IF EXISTS \`$PROJECT_ID.$DATASET.interactions\`;
+     DROP TABLE IF EXISTS \`$PROJECT_ID.$DATASET.book_id_map\`;
+     DROP TABLE IF EXISTS \`$PROJECT_ID.$DATASET.user_id_map\`;
      DROP VIEW  IF EXISTS \`$PROJECT_ID.$DATASET.v_books\`;
      DROP VIEW  IF EXISTS \`$PROJECT_ID.$DATASET.v_authors\`;"
 
 echo
 echo "Done."
 echo "  GCS:       $BUCKET/$GCS_PREFIX/"
-echo "  BigQuery:  $PROJECT_ID:$DATASET  (typed tables: books, authors,"
-echo "             interactions, book_id_map, user_id_map)"
+echo "  BigQuery:  $PROJECT_ID:$DATASET  (typed table: books)"

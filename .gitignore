@@ -5,6 +5,13 @@ __pycache__/
 .states
 *.db
 
+# Local Goodreads dataset files (downloaded from UCSD; do not redistribute)
+goodreads_books*.json
+goodreads_book_authors*.json
+goodreads_interactions*.csv
+book_id_map.csv
+user_id_map.csv
+
 # macOS
 .DS_Store
 
