@@ -20,15 +20,15 @@ WITH
       b.average_rating, b.ratings_count, b.language_code,
       ARRAY(
         SELECT s.name FROM UNNEST(b.popular_shelves) s, noise n
-        WHERE SAFE_CAST(s.count AS INT64) >= 20
+        WHERE s.count >= 20
           AND LOWER(s.name) NOT IN UNNEST(n.shelves)
-        ORDER BY SAFE_CAST(s.count AS INT64) DESC LIMIT 10
+        ORDER BY s.count DESC LIMIT 10
       ) AS top_shelves,
       ARRAY(SELECT a.author_id FROM UNNEST(b.authors) a) AS author_ids,
       (
         SELECT COUNT(DISTINCT LOWER(k))
         FROM UNNEST(b.popular_shelves) s, noise n, UNNEST(@keywords) k
-        WHERE SAFE_CAST(s.count AS INT64) >= 20
+        WHERE s.count >= 20
           AND LOWER(s.name) NOT IN UNNEST(n.shelves)
           AND LOWER(k) IN UNNEST(SPLIT(LOWER(s.name), '-'))
       ) AS match_score

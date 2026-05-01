@@ -93,9 +93,15 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-# Schemas (numerics kept as STRING -- see README rationale)
+# Wire-format schemas for the raw JSON files.
+#
+# The UCSD Goodreads JSON encodes every numeric / boolean as a quoted string
+# (e.g. "num_pages": "320", "is_ebook": "false"). BigQuery's JSON loader does
+# not coerce string -> number, so we must land the JSON in a STRING-typed
+# staging table first and then SAFE_CAST into the canonical typed tables
+# below. The staging tables are dropped at the end.
 # ----------------------------------------------------------------------------
-BOOKS_SCHEMA='[
+BOOKS_STAGE_SCHEMA='[
   {"name":"isbn","type":"STRING"},
   {"name":"text_reviews_count","type":"STRING"},
   {"name":"series","type":"STRING","mode":"REPEATED"},
@@ -133,7 +139,7 @@ BOOKS_SCHEMA='[
   {"name":"title_without_series","type":"STRING"}
 ]'
 
-AUTHORS_SCHEMA='[
+AUTHORS_STAGE_SCHEMA='[
   {"name":"author_id","type":"STRING"},
   {"name":"name","type":"STRING"},
   {"name":"average_rating","type":"STRING"},
@@ -174,19 +180,22 @@ load_table() {
 # Write the JSON schemas to temp files (bq load wants @file for JSON schemas)
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
-echo "$BOOKS_SCHEMA"   > "$TMP_DIR/books.schema.json"
-echo "$AUTHORS_SCHEMA" > "$TMP_DIR/authors.schema.json"
+echo "$BOOKS_STAGE_SCHEMA"   > "$TMP_DIR/books.schema.json"
+echo "$AUTHORS_STAGE_SCHEMA" > "$TMP_DIR/authors.schema.json"
 
 # ----------------------------------------------------------------------------
 # Loads
+#
+# JSON sources land in _stage_* tables (all STRING); the canonical typed
+# `books` and `authors` tables are built from them further below.
 # ----------------------------------------------------------------------------
-load_table "books" \
+load_table "_stage_books" \
     "NEWLINE_DELIMITED_JSON" \
     "$BUCKET/$GCS_PREFIX/goodreads_books.json" \
     "$TMP_DIR/books.schema.json" \
     "--max_bad_records=100 --ignore_unknown_values"
 
-load_table "authors" \
+load_table "_stage_authors" \
     "NEWLINE_DELIMITED_JSON" \
     "$BUCKET/$GCS_PREFIX/goodreads_book_authors.json" \
     "$TMP_DIR/authors.schema.json" \
@@ -211,11 +220,16 @@ load_table "user_id_map" \
     "--skip_leading_rows=1"
 
 # ----------------------------------------------------------------------------
-# Typed convenience views (SAFE_CAST so empty strings -> NULL cleanly)
+# Build the canonical typed tables from the staging tables.
+#
+# SAFE_CAST turns empty strings / malformed values into NULL instead of
+# failing the whole query. After this step the staging tables and the legacy
+# v_books / v_authors views (from earlier versions of this script) are
+# dropped so there is exactly one source of truth per entity.
 # ----------------------------------------------------------------------------
-echo "[view] creating $DATASET.v_books"
-bq --location="$LOCATION" query --use_legacy_sql=false --replace --quiet \
-    "CREATE OR REPLACE VIEW \`$PROJECT_ID.$DATASET.v_books\` AS
+echo "[table] creating typed $DATASET.books"
+bq --location="$LOCATION" query --use_legacy_sql=false --quiet \
+    "CREATE OR REPLACE TABLE \`$PROJECT_ID.$DATASET.books\` AS
      SELECT
        book_id,
        work_id,
@@ -237,29 +251,45 @@ bq --location="$LOCATION" query --use_legacy_sql=false --replace --quiet \
        authors,
        series,
        similar_books,
-       popular_shelves,
-       SAFE_CAST(average_rating    AS FLOAT64) AS average_rating,
-       SAFE_CAST(ratings_count     AS INT64)   AS ratings_count,
-       SAFE_CAST(text_reviews_count AS INT64)  AS text_reviews_count,
-       SAFE_CAST(num_pages         AS INT64)   AS num_pages,
-       SAFE_CAST(publication_year  AS INT64)   AS publication_year,
-       SAFE_CAST(publication_month AS INT64)   AS publication_month,
-       SAFE_CAST(publication_day   AS INT64)   AS publication_day,
-       SAFE_CAST(LOWER(is_ebook)   AS BOOL)    AS is_ebook
-     FROM \`$PROJECT_ID.$DATASET.books\`"
+       ARRAY(
+         SELECT AS STRUCT
+           SAFE_CAST(s.count AS INT64) AS count,
+           s.name
+         FROM UNNEST(popular_shelves) AS s
+       ) AS popular_shelves,
+       SAFE_CAST(average_rating     AS FLOAT64) AS average_rating,
+       SAFE_CAST(ratings_count      AS INT64)   AS ratings_count,
+       SAFE_CAST(text_reviews_count AS INT64)   AS text_reviews_count,
+       SAFE_CAST(num_pages          AS INT64)   AS num_pages,
+       SAFE_CAST(publication_year   AS INT64)   AS publication_year,
+       SAFE_CAST(publication_month  AS INT64)   AS publication_month,
+       SAFE_CAST(publication_day    AS INT64)   AS publication_day,
+       SAFE_CAST(LOWER(is_ebook)    AS BOOL)    AS is_ebook
+     FROM \`$PROJECT_ID.$DATASET._stage_books\`"
 
-echo "[view] creating $DATASET.v_authors"
-bq --location="$LOCATION" query --use_legacy_sql=false --replace --quiet \
-    "CREATE OR REPLACE VIEW \`$PROJECT_ID.$DATASET.v_authors\` AS
+echo "[table] creating typed $DATASET.authors"
+bq --location="$LOCATION" query --use_legacy_sql=false --quiet \
+    "CREATE OR REPLACE TABLE \`$PROJECT_ID.$DATASET.authors\` AS
      SELECT
        author_id,
        name,
        SAFE_CAST(average_rating     AS FLOAT64) AS average_rating,
        SAFE_CAST(ratings_count      AS INT64)   AS ratings_count,
        SAFE_CAST(text_reviews_count AS INT64)   AS text_reviews_count
-     FROM \`$PROJECT_ID.$DATASET.authors\`"
+     FROM \`$PROJECT_ID.$DATASET._stage_authors\`"
+
+# ----------------------------------------------------------------------------
+# Clean up: drop staging tables and any legacy v_* views from prior runs.
+# ----------------------------------------------------------------------------
+echo "[cleanup] dropping staging tables and legacy views"
+bq --location="$LOCATION" query --use_legacy_sql=false --quiet \
+    "DROP TABLE IF EXISTS \`$PROJECT_ID.$DATASET._stage_books\`;
+     DROP TABLE IF EXISTS \`$PROJECT_ID.$DATASET._stage_authors\`;
+     DROP VIEW  IF EXISTS \`$PROJECT_ID.$DATASET.v_books\`;
+     DROP VIEW  IF EXISTS \`$PROJECT_ID.$DATASET.v_authors\`;"
 
 echo
 echo "Done."
 echo "  GCS:       $BUCKET/$GCS_PREFIX/"
-echo "  BigQuery:  $PROJECT_ID:$DATASET  (tables + v_books, v_authors views)"
+echo "  BigQuery:  $PROJECT_ID:$DATASET  (typed tables: books, authors,"
+echo "             interactions, book_id_map, user_id_map)"
