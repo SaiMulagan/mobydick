@@ -62,6 +62,7 @@ LOCAL_FILES=(
     "goodreads_interactions.csv"
     "book_id_map.csv"
     "user_id_map.csv"
+    "reddit_posts.ndjson"
 )
 
 UPLOAD_LIST=()
@@ -153,6 +154,10 @@ INTERACTIONS_SCHEMA='user_id:INT64,book_id:INT64,is_read:INT64,rating:INT64,is_r
 BOOK_ID_MAP_SCHEMA='book_id_csv:INT64,book_id:STRING'
 USER_ID_MAP_SCHEMA='user_id_csv:INT64,user_id:STRING'
 
+# Reddit data is produced by reddit_fetch.py and is already typed at write
+# time, so it loads straight into the canonical reddit_posts table.
+REDDIT_POSTS_SCHEMA='post_id:STRING,subreddit:STRING,sort_bucket:STRING,title:STRING,selftext:STRING,score:INT64,upvote_ratio:FLOAT64,num_comments:INT64,created_utc:FLOAT64,permalink:STRING,url:STRING,author:STRING,link_flair_text:STRING'
+
 # ----------------------------------------------------------------------------
 # Helper: load a table from a GCS object (only if the object exists)
 # ----------------------------------------------------------------------------
@@ -221,6 +226,12 @@ load_table "user_id_map" \
     "$BUCKET/$GCS_PREFIX/user_id_map.csv" \
     "$USER_ID_MAP_SCHEMA" \
     "--skip_leading_rows=1"
+
+load_table "reddit_posts" \
+    "NEWLINE_DELIMITED_JSON" \
+    "$BUCKET/$GCS_PREFIX/reddit_posts.ndjson" \
+    "$REDDIT_POSTS_SCHEMA" \
+    "--max_bad_records=10 --ignore_unknown_values"
 
 # ----------------------------------------------------------------------------
 # Build the canonical typed `books` table from the staging table.
@@ -300,3 +311,4 @@ echo "  GCS:       $BUCKET/$GCS_PREFIX/"
 echo "  BigQuery:  $PROJECT_ID:$DATASET"
 echo "    typed tables:  books, authors"
 echo "    csv tables:    interactions, book_id_map, user_id_map"
+echo "    reddit:        reddit_posts"

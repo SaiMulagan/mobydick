@@ -12,6 +12,9 @@ goodreads_interactions*.csv
 book_id_map.csv
 user_id_map.csv
 
+# Reddit fetch output (regenerable via reddit_fetch.py; not source)
+reddit_posts*.ndjson
+
 # macOS
 .DS_Store
 
