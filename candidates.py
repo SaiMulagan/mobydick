@@ -1,8 +1,11 @@
 from google.cloud import bigquery
 from google.cloud.bigquery import ScalarQueryParameter, ArrayQueryParameter
 
-from config import GCP_PROJECT, BQ_BOOKS
+from config import GCP_PROJECT, BQ_BOOKS, BQ_DATASET
 from schema import SurveyFilters
+
+# Reddit signal view built by sub-step 1d (see v_reddit_signal definition).
+_BQ_REDDIT_SIGNAL = f"{GCP_PROJECT}.{BQ_DATASET}.v_reddit_signal"
 
 _SQL = f"""
 WITH
@@ -16,7 +19,7 @@ WITH
   ),
   scored AS (
     SELECT
-      b.book_id, b.title, b.description, b.num_pages, b.publication_year,
+      b.book_id, b.work_id, b.title, b.description, b.num_pages, b.publication_year,
       b.average_rating, b.ratings_count, b.language_code,
       ARRAY(
         SELECT s.name FROM UNNEST(b.popular_shelves) s, noise n
@@ -37,10 +40,23 @@ WITH
       AND b.num_pages BETWEEN @page_min AND @page_max
       AND b.ratings_count >= 100
     QUALIFY ROW_NUMBER() OVER (PARTITION BY b.work_id ORDER BY b.ratings_count DESC) = 1
+  ),
+  with_reddit AS (
+    SELECT
+      s.*,
+      COALESCE(rs.recommended_count,    0) AS reddit_recommended,
+      COALESCE(rs.asked_similar_count,  0) AS reddit_asked_similar,
+      COALESCE(rs.weighted_score,       0) AS reddit_weighted_score
+    FROM scored s
+    LEFT JOIN `{_BQ_REDDIT_SIGNAL}` rs USING (work_id)
   )
-SELECT * FROM scored
+SELECT * FROM with_reddit
 WHERE match_score >= 1
-ORDER BY match_score DESC, ratings_count DESC
+ORDER BY
+  match_score DESC,
+  reddit_recommended DESC,
+  reddit_weighted_score DESC,
+  ratings_count DESC
 LIMIT 200
 """
 

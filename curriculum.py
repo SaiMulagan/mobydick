@@ -21,9 +21,10 @@ GUIDELINES:
   wrong-era books. If they ask for "philosophy" specifically, prefer
   philosophy over poetry/fiction even if both are in the pool.
 - Match the requested difficulty: "high" = challenging, "low" = casual.
-- `reason` is 1-3 sentences explaining why this book is in this slot.
+- `reason` is ONE concise sentence explaining why this book is in this slot.
+  Keep it under 180 characters.
 - `week` is the 1-indexed week the user starts the book.
-- `overall_arc` is 1-3 sentences on the curriculum's shape.
+- `overall_arc` is ONE-TO-TWO sentences on the curriculum's shape, under 250 characters.
 
 USER SURVEY:
 GENRE:      <<<{genre}>>>
@@ -36,14 +37,18 @@ CANDIDATE POOL ({n} books):
 
 
 def _format_candidate(row, idx):
-    desc = (row.description or "").replace("\n", " ")[:600]
+    """
+    One-line per candidate. Descriptions are intentionally OFF — they're
+    ~200 tokens each and Goodreads descriptions are noisy. The shelf list +
+    title + year carries enough signal for Gemini to rank, and dropping
+    descriptions cuts ~5,000 input tokens per call (1-2 seconds faster).
+    """
     shelves = ", ".join(list(row.top_shelves)[:6])
     rating = f"{row.average_rating:.2f}" if row.average_rating is not None else "n/a"
     return (
         f"[{idx}] book_id={row.book_id} | {row.title} "
         f"({row.publication_year}) | {row.num_pages}p | "
-        f"avg_rating={rating} | shelves: {shelves}\n"
-        f"    desc: {desc}"
+        f"avg_rating={rating} | shelves: {shelves}"
     )
 
 

@@ -40,9 +40,13 @@ class CurriculumPick(BaseModel):
     title: str
     author: str
     week: int = Field(ge=1, le=52)
-    reason: str = Field(min_length=20, max_length=500)
+    # Prompt asks for ~1 sentence under 180 chars. Max here is a safety net
+    # (Gemini's JSON-mode honors structure but not string-length constraints
+    # strictly — give 25% wiggle room so we don't crash when it overshoots).
+    reason: str = Field(min_length=20, max_length=300)
 
 
 class Curriculum(BaseModel):
     picks: list[CurriculumPick] = Field(min_length=5, max_length=5)
-    overall_arc: str = Field(min_length=30, max_length=600)
+    # Prompt asks for 1-2 sentences under 250 chars; max is a safety net.
+    overall_arc: str = Field(min_length=30, max_length=400)

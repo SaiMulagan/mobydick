@@ -63,6 +63,7 @@ LOCAL_FILES=(
     "book_id_map.csv"
     "user_id_map.csv"
     "reddit_posts.ndjson"
+    "reddit_book_mentions.ndjson"
 )
 
 UPLOAD_LIST=()
@@ -158,6 +159,11 @@ USER_ID_MAP_SCHEMA='user_id_csv:INT64,user_id:STRING'
 # time, so it loads straight into the canonical reddit_posts table.
 REDDIT_POSTS_SCHEMA='post_id:STRING,subreddit:STRING,sort_bucket:STRING,title:STRING,selftext:STRING,score:INT64,upvote_ratio:FLOAT64,num_comments:INT64,created_utc:FLOAT64,permalink:STRING,url:STRING,author:STRING,link_flair_text:STRING'
 
+# Book mentions extracted from each Reddit post by reddit_extract.py
+# (per-post Gemini call). Used by v_reddit_signal to score candidate books
+# during curriculum generation.
+REDDIT_MENTIONS_SCHEMA='post_id:STRING,subreddit:STRING,post_score:INT64,mentioned_title:STRING,mentioned_author:STRING,context:STRING'
+
 # ----------------------------------------------------------------------------
 # Helper: load a table from a GCS object (only if the object exists)
 # ----------------------------------------------------------------------------
@@ -233,6 +239,12 @@ load_table "reddit_posts" \
     "$REDDIT_POSTS_SCHEMA" \
     "--max_bad_records=10 --ignore_unknown_values"
 
+load_table "reddit_book_mentions" \
+    "NEWLINE_DELIMITED_JSON" \
+    "$BUCKET/$GCS_PREFIX/reddit_book_mentions.ndjson" \
+    "$REDDIT_MENTIONS_SCHEMA" \
+    "--max_bad_records=10 --ignore_unknown_values"
+
 # ----------------------------------------------------------------------------
 # Build the canonical typed `books` table from the staging table.
 #
@@ -293,6 +305,55 @@ bq --location="$LOCATION" query --use_legacy_sql=false --quiet \
      FROM \`$PROJECT_ID.$DATASET._stage_authors\`"
 
 # ----------------------------------------------------------------------------
+# Build the v_reddit_signal view: resolves Reddit book mentions to book_id
+# (case-insensitive title match), aggregates per work_id, and exposes
+# recommended/asked-similar/warned counts plus a weighted upvote score for
+# candidate ranking in candidates.py.
+#
+# Idempotent on re-run; depends on `books` and `reddit_book_mentions` having
+# been built/loaded above.
+# ----------------------------------------------------------------------------
+echo "[view] creating $DATASET.v_reddit_signal"
+bq --location="$LOCATION" query --use_legacy_sql=false --quiet \
+    "CREATE OR REPLACE VIEW \`$PROJECT_ID.$DATASET.v_reddit_signal\` AS
+     WITH books_dedup AS (
+       SELECT book_id, work_id, title, title_without_series, ratings_count
+       FROM \`$PROJECT_ID.$DATASET.books\`
+       QUALIFY ROW_NUMBER() OVER (PARTITION BY work_id ORDER BY ratings_count DESC) = 1
+     ),
+     normalized AS (
+       SELECT
+         LOWER(TRIM(mentioned_title)) AS norm_title,
+         context, post_score, post_id
+       FROM \`$PROJECT_ID.$DATASET.reddit_book_mentions\`
+     ),
+     matched AS (
+       SELECT
+         n.context, n.post_score, n.post_id,
+         b.work_id, b.book_id, b.title
+       FROM normalized n
+       JOIN books_dedup b
+         ON LOWER(b.title_without_series) = n.norm_title
+            OR LOWER(b.title) = n.norm_title
+       QUALIFY ROW_NUMBER() OVER (
+         PARTITION BY n.post_id, n.norm_title
+         ORDER BY b.ratings_count DESC
+       ) = 1
+     )
+     SELECT
+       work_id,
+       ANY_VALUE(book_id) AS book_id,
+       ANY_VALUE(title)   AS title,
+       COUNT(*)                                    AS mention_count,
+       COUNT(DISTINCT post_id)                     AS unique_posts,
+       COUNTIF(context = 'recommended')            AS recommended_count,
+       COUNTIF(context = 'asking_for_similar')     AS asked_similar_count,
+       COUNTIF(context = 'warned_against')         AS warned_count,
+       SUM(post_score)                             AS weighted_score
+     FROM matched
+     GROUP BY work_id"
+
+# ----------------------------------------------------------------------------
 # Clean up the staging tables and legacy views from earlier versions of this
 # script. The canonical user-facing tables (books, authors, interactions,
 # book_id_map, user_id_map) are kept — interactions in particular holds the
@@ -311,4 +372,5 @@ echo "  GCS:       $BUCKET/$GCS_PREFIX/"
 echo "  BigQuery:  $PROJECT_ID:$DATASET"
 echo "    typed tables:  books, authors"
 echo "    csv tables:    interactions, book_id_map, user_id_map"
-echo "    reddit:        reddit_posts"
+echo "    reddit:        reddit_posts, reddit_book_mentions"
+echo "    views:         v_reddit_signal"

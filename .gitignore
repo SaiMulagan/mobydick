@@ -15,6 +15,9 @@ user_id_map.csv
 # Reddit fetch output (regenerable via reddit_fetch.py; not source)
 reddit_posts*.ndjson
 
+# Reddit mention extraction output (regenerable via reddit_extract.py; not source)
+reddit_book_mentions*.ndjson
+
 # macOS
 .DS_Store
 
