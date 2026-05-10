@@ -4,6 +4,8 @@ assets/external/
 __pycache__/
 .states
 *.db
+reflex.db
+reflex.db-journal
 
 # Local Goodreads dataset files (downloaded from UCSD; do not redistribute)
 goodreads_books*.json
