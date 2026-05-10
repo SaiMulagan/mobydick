@@ -39,6 +39,17 @@ WITH
     WHERE b.language_code IN UNNEST(@langs)
       AND b.num_pages BETWEEN @page_min AND @page_max
       AND b.ratings_count >= 100
+      -- Filter out user-supplied already-read titles. Strip leading
+      -- "The ", "A ", "An " on both sides so that "Brothers Karamazov"
+      -- typed by a user matches the canonical "The Brothers Karamazov".
+      AND REGEXP_REPLACE(LOWER(b.title), r'^(the |a |an )', '') NOT IN (
+        SELECT REGEXP_REPLACE(LOWER(t), r'^(the |a |an )', '')
+        FROM UNNEST(@exclude_titles) t
+      )
+      AND REGEXP_REPLACE(LOWER(b.title_without_series), r'^(the |a |an )', '') NOT IN (
+        SELECT REGEXP_REPLACE(LOWER(t), r'^(the |a |an )', '')
+        FROM UNNEST(@exclude_titles) t
+      )
     QUALIFY ROW_NUMBER() OVER (PARTITION BY b.work_id ORDER BY b.ratings_count DESC) = 1
   ),
   with_reddit AS (
@@ -63,10 +74,21 @@ LIMIT 200
 _client = bigquery.Client(project=GCP_PROJECT)
 
 
-def fetch_candidates(filters: SurveyFilters) -> list[bigquery.Row]:
+def fetch_candidates(
+    filters: SurveyFilters,
+    exclude_titles: list[str] | None = None,
+) -> list[bigquery.Row]:
+    """Run the parameterized candidate query.
+
+    `exclude_titles` is a list of free-text titles the user has already read.
+    They're filtered out of the pool via case-insensitive title match against
+    both `title` and `title_without_series`. Empty list = no filtering.
+    """
+    exclude_titles = exclude_titles or []
     job_config = bigquery.QueryJobConfig(query_parameters=[
-        ArrayQueryParameter("keywords",  "STRING", filters.topic_keywords),
-        ArrayQueryParameter("langs",     "STRING", filters.language_codes),
+        ArrayQueryParameter("keywords",       "STRING", filters.topic_keywords),
+        ArrayQueryParameter("langs",          "STRING", filters.language_codes),
+        ArrayQueryParameter("exclude_titles", "STRING", exclude_titles),
         ScalarQueryParameter("page_min", "INT64", filters.page_range.min),
         ScalarQueryParameter("page_max", "INT64", filters.page_range.max),
         ScalarQueryParameter("era_start","INT64",

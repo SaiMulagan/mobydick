@@ -1,3 +1,5 @@
 fastapi
 mlflow
 pydantic
+sqlmodel
+alembic

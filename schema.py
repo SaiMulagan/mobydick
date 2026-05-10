@@ -50,3 +50,6 @@ class Curriculum(BaseModel):
     picks: list[CurriculumPick] = Field(min_length=5, max_length=5)
     # Prompt asks for 1-2 sentences under 250 chars; max is a safety net.
     overall_arc: str = Field(min_length=30, max_length=400)
+    # Set by pipeline._persist / _try_cache after saving or loading from DB.
+    # None when running without a user_id (e.g. CLI smoke tests).
+    db_id: Optional[int] = None
