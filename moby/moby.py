@@ -33,7 +33,10 @@ DISPLAY_STYLE = {
 }
 
 
-def pick_card(pick) -> rx.Component:
+def pick_card(pick, curriculum_id) -> rx.Component:
+    """Editable pick card. `curriculum_id` is required so handlers know
+    which Progress row to mutate — pass State.curriculum_id on the
+    generation page; pass each curriculum's id on the dashboard."""
     return rx.card(
         rx.text("Week ", pick["week"], style=LABEL_STYLE),
         rx.heading(
@@ -59,7 +62,7 @@ def pick_card(pick) -> rx.Component:
         rx.hstack(
             rx.text("STATUS", style={**LABEL_STYLE, "font_size": "10px"}),
             rx.select.root(
-                rx.select.trigger(variant="soft", radius="medium"),
+                rx.select.trigger(variant="surface", radius="medium"),
                 rx.select.content(
                     rx.select.item("Not started", value="not_started"),
                     rx.select.item("Reading",     value="reading"),
@@ -67,7 +70,7 @@ def pick_card(pick) -> rx.Component:
                     rx.select.item("Abandoned",   value="abandoned"),
                 ),
                 value=pick["status"],
-                on_change=lambda v: State.set_pick_status(pick["book_id"], v),
+                on_change=lambda v: State.set_pick_status(curriculum_id, pick["book_id"], v),
                 size="1",
             ),
             spacing="2",
@@ -82,7 +85,7 @@ def pick_card(pick) -> rx.Component:
                 rx.hstack(
                     rx.text("RATING", style={**LABEL_STYLE, "font_size": "10px"}),
                     rx.select.root(
-                        rx.select.trigger(variant="soft", radius="medium"),
+                        rx.select.trigger(variant="surface", radius="medium"),
                         rx.select.content(
                             rx.select.item("—",     value="0"),
                             rx.select.item("★",     value="1"),
@@ -92,12 +95,12 @@ def pick_card(pick) -> rx.Component:
                             rx.select.item("★★★★★", value="5"),
                         ),
                         value=pick["rating"].to_string(),
-                        on_change=lambda v: State.set_pick_rating(pick["book_id"], v),
+                        on_change=lambda v: State.set_pick_rating(curriculum_id, pick["book_id"], v),
                         size="1",
                     ),
                     rx.text("DIFFICULTY", style={**LABEL_STYLE, "font_size": "10px", "margin_left": "12px"}),
                     rx.select.root(
-                        rx.select.trigger(variant="soft", radius="medium", placeholder="—"),
+                        rx.select.trigger(variant="surface", radius="medium", placeholder="—"),
                         rx.select.content(
                             rx.select.item("Too easy",   value="too_easy"),
                             rx.select.item("Just right", value="just_right"),
@@ -105,7 +108,7 @@ def pick_card(pick) -> rx.Component:
                             rx.select.item("Abandoned",  value="abandoned"),
                         ),
                         value=pick["difficulty_felt"],
-                        on_change=lambda v: State.set_pick_difficulty_felt(pick["book_id"], v),
+                        on_change=lambda v: State.set_pick_difficulty_felt(curriculum_id, pick["book_id"], v),
                         size="1",
                     ),
                     spacing="2",
@@ -115,8 +118,8 @@ def pick_card(pick) -> rx.Component:
                     value=pick["comment"],
                     # on_change keeps the textarea responsive (in-memory only);
                     # on_blur is what actually writes to the DB.
-                    on_change=lambda v: State.update_pick_comment_draft(pick["book_id"], v),
-                    on_blur=lambda v: State.commit_pick_comment(pick["book_id"], v),
+                    on_change=lambda v: State.update_pick_comment_draft(curriculum_id, pick["book_id"], v),
+                    on_blur=lambda v: State.commit_pick_comment(curriculum_id, pick["book_id"], v),
                     placeholder="Notes — what worked, what didn't (saved when you click away)",
                     size="2",
                     rows="2",
@@ -271,7 +274,7 @@ def survey_form() -> rx.Component:
                         "margin_bottom": "8px",
                     },
                 ),
-                rx.foreach(State.picks, pick_card),
+                rx.foreach(State.picks, lambda p: pick_card(p, State.curriculum_id)),
                 rx.button(
                     "Try another",
                     on_click=State.reset_form,
@@ -384,31 +387,11 @@ def curriculum_summary_card(c) -> rx.Component:
             margin_top="3",
         ),
 
-        # Compact pick list (title + status only)
+        # Editable picks — same component as the generation page so users
+        # can mark books finished / rate them / add comments at any time.
         rx.vstack(
-            rx.foreach(
-                c["picks"],
-                lambda p: rx.hstack(
-                    rx.text("Wk ", p["week"], size="1", style={"color": WINE_SOFT, "min_width": "48px"}),
-                    rx.text(p["title"], size="2", style={"color": INK, "font_weight": "500"}),
-                    rx.spacer(),
-                    rx.badge(
-                        p["status"],
-                        variant="soft",
-                        color_scheme=rx.match(
-                            p["status"],
-                            ("finished",  "ruby"),
-                            ("reading",   "amber"),
-                            ("abandoned", "gray"),
-                            "gray",
-                        ),
-                        size="1",
-                    ),
-                    width="100%",
-                    spacing="2",
-                ),
-            ),
-            spacing="1",
+            rx.foreach(c["picks"], lambda p: pick_card(p, c["id"])),
+            spacing="3",
             width="100%",
             margin_top="3",
         ),

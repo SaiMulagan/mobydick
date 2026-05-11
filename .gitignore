@@ -23,5 +23,8 @@ reddit_book_mentions*.ndjson
 # macOS
 .DS_Store
 
+# Office app lock files (created while a .pptx/.docx is open)
+~$*
+
 # Claude Code worktrees and memory (local only)
 .claude/

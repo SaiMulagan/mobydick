@@ -182,15 +182,19 @@ class State(rx.State):
         self.user_id = new_id
 
     @rx.event
-    def set_pick_status(self, book_id: str, new_status: str):
-        """Update status + lifecycle timestamps for a pick."""
-        if not self.curriculum_id:
+    def set_pick_status(self, curriculum_id: int, book_id: str, new_status: str):
+        """Update status + lifecycle timestamps for a pick.
+
+        Accepts curriculum_id explicitly so this works from both the
+        generation page (one active curriculum) and the dashboard
+        (multiple curricula visible at once)."""
+        if not curriculum_id:
             return
         now = datetime.utcnow()
         with rx.session() as session:
             row = session.exec(
                 select(Progress)
-                .where(Progress.curriculum_id == self.curriculum_id)
+                .where(Progress.curriculum_id == curriculum_id)
                 .where(Progress.book_id == book_id)
             ).first()
             if row is None:
@@ -203,64 +207,77 @@ class State(rx.State):
                 row.finished_at = now
             session.add(row)
             session.commit()
-        self.picks = [
-            {**p, "status": new_status} if p["book_id"] == book_id else p
-            for p in self.picks
-        ]
+        self._propagate_pick_change(curriculum_id, book_id, status=new_status)
+        # Status changes affect the summary counts on the dashboard, so
+        # reload them (cheap — single user, local SQLite).
+        if self.dashboard_curricula:
+            self._load_dashboard_data()
 
     @rx.event
-    def set_pick_rating(self, book_id: str, value: str):
+    def set_pick_rating(self, curriculum_id: int, book_id: str, value: str):
         """Update the 1-5 star rating. value comes from rx.select as a
         string ("0" through "5"); 0 / empty maps to NULL in DB."""
-        if not self.curriculum_id:
+        if not curriculum_id:
             return
         try:
             rating_int = int(value) if value else 0
         except ValueError:
             rating_int = 0
 
-        self._patch_progress(book_id, rating=rating_int or None)
-        self.picks = [
-            {**p, "rating": rating_int} if p["book_id"] == book_id else p
-            for p in self.picks
-        ]
+        self._patch_progress(curriculum_id, book_id, rating=rating_int or None)
+        self._propagate_pick_change(curriculum_id, book_id, rating=rating_int)
 
     @rx.event
-    def set_pick_difficulty_felt(self, book_id: str, value: str):
+    def set_pick_difficulty_felt(self, curriculum_id: int, book_id: str, value: str):
         """Update the post-read difficulty assessment."""
-        if not self.curriculum_id:
+        if not curriculum_id:
             return
         # rx.select returns "" when cleared; treat as NULL.
         normalized = value if value else None
-        self._patch_progress(book_id, difficulty_felt=normalized)
-        self.picks = [
-            {**p, "difficulty_felt": value} if p["book_id"] == book_id else p
-            for p in self.picks
-        ]
+        self._patch_progress(curriculum_id, book_id, difficulty_felt=normalized)
+        self._propagate_pick_change(curriculum_id, book_id, difficulty_felt=value)
 
     @rx.event
-    def update_pick_comment_draft(self, book_id: str, value: str):
+    def update_pick_comment_draft(self, curriculum_id: int, book_id: str, value: str):
         """Update the in-memory comment as the user types. No DB write —
         keeps the textarea responsive without per-keystroke round-trips."""
-        self.picks = [
-            {**p, "comment": value} if p["book_id"] == book_id else p
-            for p in self.picks
-        ]
+        self._propagate_pick_change(curriculum_id, book_id, comment=value)
 
     @rx.event
-    def commit_pick_comment(self, book_id: str, value: str):
+    def commit_pick_comment(self, curriculum_id: int, book_id: str, value: str):
         """Persist the comment to DB. Fires on blur (focus leaves textarea)."""
-        if not self.curriculum_id:
+        if not curriculum_id:
             return
-        self._patch_progress(book_id, comment=(value or None))
+        self._patch_progress(curriculum_id, book_id, comment=(value or None))
 
-    def _patch_progress(self, book_id: str, **fields) -> None:
+    def _propagate_pick_change(self, curriculum_id: int, book_id: str, **fields) -> None:
+        """Reflect a per-pick change in both State.picks (if this is the
+        active curriculum) and State.dashboard_curricula (if it's listed)."""
+        if self.curriculum_id == curriculum_id:
+            self.picks = [
+                {**p, **fields} if p["book_id"] == book_id else p
+                for p in self.picks
+            ]
+        # Update the matching pick inside dashboard_curricula too.
+        if self.dashboard_curricula:
+            self.dashboard_curricula = [
+                {
+                    **c,
+                    "picks": [
+                        {**p, **fields} if p["book_id"] == book_id else p
+                        for p in c["picks"]
+                    ],
+                } if c["id"] == curriculum_id else c
+                for c in self.dashboard_curricula
+            ]
+
+    def _patch_progress(self, curriculum_id: int, book_id: str, **fields) -> None:
         """Internal helper: mutate one or more fields on the Progress row
         for (curriculum_id, book_id). Always bumps updated_at."""
         with rx.session() as session:
             row = session.exec(
                 select(Progress)
-                .where(Progress.curriculum_id == self.curriculum_id)
+                .where(Progress.curriculum_id == curriculum_id)
                 .where(Progress.book_id == book_id)
             ).first()
             if row is None:
@@ -273,8 +290,14 @@ class State(rx.State):
 
     @rx.event
     def load_dashboard(self):
+        """Public event handler — wraps the actual loader so other handlers
+        can refresh dashboard state without re-decorating."""
+        self._load_dashboard_data()
+
+    def _load_dashboard_data(self):
         """Populate dashboard_curricula + the two header stat counts.
-        Called on /dashboard mount."""
+        Called on /dashboard mount and after any status change (since
+        the summary counts depend on per-pick statuses)."""
         if not self.user_id:
             self.dashboard_curricula = []
             self.dashboard_total_finished = 0

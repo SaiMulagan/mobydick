@@ -103,6 +103,42 @@ def _persist(
     result.db_id = new_id
 
 
+def _titles_from_past_progress(user_id: str) -> list[str]:
+    """Return titles of books this user has already engaged with across all
+    past curricula — any status other than `not_started`. Used to auto-
+    exclude them from new candidate pools so a finished/abandoned/in-progress
+    book never resurfaces in a new curriculum.
+
+    Goes through each Curriculum row's picks_json (where titles live) and
+    cross-references it with the Progress rows for that curriculum.
+    """
+    with rx.session() as session:
+        curricula = session.exec(
+            select(CurriculumRow).where(CurriculumRow.user_id == user_id)
+        ).all()
+        if not curricula:
+            return []
+
+        # (curriculum_id, picks_json) pairs, materialized inside the session.
+        snapshots = [(c.id, c.picks_json) for c in curricula]
+
+        excluded: list[str] = []
+        for curr_id, picks_json in snapshots:
+            picks_by_id = {
+                p["book_id"]: p["title"] for p in json.loads(picks_json)
+            }
+            rows = session.exec(
+                select(ProgressRow)
+                .where(ProgressRow.curriculum_id == curr_id)
+                .where(ProgressRow.status != "not_started")
+            ).all()
+            for r in rows:
+                title = picks_by_id.get(r.book_id)
+                if title:
+                    excluded.append(title)
+    return excluded
+
+
 def generate_for_survey(
     genre: str,
     time_to_read: str,
@@ -114,12 +150,21 @@ def generate_for_survey(
 
     If user_id is provided, the result is persisted to the DB and a cache
     lookup is attempted before doing any Gemini/BigQuery work.
-    """
-    already_read_titles = already_read_titles or []
 
-    # Cache check (only when we have a user identity AND no exclude list —
-    # exclude list invalidates the cache because it changes the candidate pool).
-    if user_id and not already_read_titles:
+    Books the user has engaged with in any past curriculum (status != not_started)
+    are auto-excluded from the new candidate pool — closes the feedback loop
+    so finished/abandoned/in-progress books don't resurface.
+    """
+    survey_excludes = list(already_read_titles or [])
+
+    # Pull auto-excludes from progress before the cache check, since the
+    # presence of past engagement changes what a "valid" cached result is.
+    auto_excludes = _titles_from_past_progress(user_id) if user_id else []
+    full_exclude_list = survey_excludes + auto_excludes
+
+    # Cache lookup is only safe when nothing needs to be excluded — otherwise
+    # the candidate pool can shift between submissions of the same survey.
+    if user_id and not full_exclude_list:
         cached = _try_cache(user_id, genre, time_to_read, difficulty)
         if cached:
             return cached
@@ -130,7 +175,7 @@ def generate_for_survey(
             "We couldn't recognize that as a topic. Try something specific "
             "like 'Russian literature' or 'popular astrophysics'."
         )
-    rows = fetch_candidates(filters, exclude_titles=already_read_titles)
+    rows = fetch_candidates(filters, exclude_titles=full_exclude_list)
     pool = rows[:POOL_SIZE]
     if not pool:
         raise ValueError(
