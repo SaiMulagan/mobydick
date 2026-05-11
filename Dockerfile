@@ -1,25 +1,33 @@
 FROM python:3.11-slim
 
-# Set working directory inside container
 WORKDIR /app
- 
-# Copy and install requirements first (layer caching)
+
+# Build deps for scientific Python wheels.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential \
+ && rm -rf /var/lib/apt/lists/*
+
+# Install Python deps first for layer caching.
 COPY requirements.txt .
-RUN conda create --name moby --file requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt
 
-# Copy all Python files and dependencies
-COPY * .
+# Copy the application source.
+COPY app.py train.py ./
 
-RUN mlflow server --backend-store-uri sqlite:///mlflow/mlflow.db \
-  --default-artifact-root, /mlflow/artifacts, \
-  --host, 0.0.0.0, \
-  --port, 5000
+# Train + register the model and bake the self-contained pyfunc copy into
+# the image. Uses a local SQLite tracking store at build time; override by
+# passing --build-arg MLFLOW_TRACKING_URI=... to log to a remote server.
+ARG MLFLOW_TRACKING_URI=""
+ENV MLFLOW_TRACKING_URI=${MLFLOW_TRACKING_URI}
+RUN python train.py
 
-# FastAPI Expose
+# Default to the local model copy at runtime so the container does not need
+# to reach the tracking server to serve predictions. Override MODEL_URI to
+# pull from the registry instead.
+ENV LOCAL_MODEL_PATH=/app/model_artifacts/book_recommender
+ENV MODEL_URI=""
+
 EXPOSE 8000
 
-# MlFlow Expose
-EXPOSE 5000
-
-# Run FastAPI using the correct environment name from environment.yml
-CMD ["conda", "run", "--no-capture-output", "-n", "moby", "fastapi", "run", "fastapi.py", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

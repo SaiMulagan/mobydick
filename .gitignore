@@ -20,6 +20,11 @@ reddit_posts*.ndjson
 # Reddit mention extraction output (regenerable via reddit_extract.py; not source)
 reddit_book_mentions*.ndjson
 
+# MLflow local artifacts (regenerable via train.py)
+mlruns/
+mlflow.db
+model_artifacts/
+
 # macOS
 .DS_Store
 

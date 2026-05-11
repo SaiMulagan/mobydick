@@ -1,5 +1,11 @@
 fastapi
-mlflow
+mlflow==3.12.0
 pydantic
 sqlmodel
 alembic
+scikit-learn
+joblib
+pandas
+numpy
+uvicorn[standard]
+google-cloud-storage
