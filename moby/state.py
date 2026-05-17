@@ -63,8 +63,18 @@ class State(rx.State):
     #   {"week", "title", "author", "book_id", "reason",
     #    "status", "rating", "difficulty_felt", "comment"}
     picks: list[dict] = []
-    # PK of the active Curriculum row, or 0 if no curriculum is loaded.
+    # PK of the curriculum currently being viewed on the home page after
+    # generation. 0 means no curriculum loaded.
     curriculum_id: int = 0
+
+    # Cookie-persisted id of the user's chosen *active* curriculum — the one
+    # the /dashboard tab tracks. Stored as a string for cookie compatibility;
+    # parsed to int when querying. "0" means no active curriculum yet.
+    active_curriculum_id: str = rx.Cookie("0")
+
+    # Loaded view of the active curriculum (0-or-1-item list so rx.foreach
+    # works without conditional branches in templates).
+    active_curriculum_list: list[DashboardCurriculum] = []
 
     # Dashboard data: list of past curricula with their progress summaries.
     # Typed so rx.foreach can introspect nested keys like
@@ -210,10 +220,12 @@ class State(rx.State):
             session.add(row)
             session.commit()
         self._propagate_pick_change(curriculum_id, book_id, status=new_status)
-        # Status changes affect the summary counts on the dashboard, so
-        # reload them (cheap — single user, local SQLite).
+        # Status changes affect summary counts on every view that renders
+        # this curriculum. Refresh both — cheap, all local SQLite.
         if self.dashboard_curricula:
             self._load_dashboard_data()
+        if self.active_curriculum_list:
+            self._load_active_curriculum_data()
 
     @rx.event
     def set_pick_rating(self, curriculum_id: int, book_id: str, value: str):
@@ -253,14 +265,17 @@ class State(rx.State):
         self._patch_progress(curriculum_id, book_id, comment=(value or None))
 
     def _propagate_pick_change(self, curriculum_id: int, book_id: str, **fields) -> None:
-        """Reflect a per-pick change in both State.picks (if this is the
-        active curriculum) and State.dashboard_curricula (if it's listed)."""
+        """Reflect a per-pick change in all three view-bound lists so the
+        UI updates wherever this curriculum is currently rendered:
+          - State.picks (active generation view on /)
+          - State.dashboard_curricula (history on /curricula)
+          - State.active_curriculum_list (single-curriculum /dashboard)
+        """
         if self.curriculum_id == curriculum_id:
             self.picks = [
                 {**p, **fields} if p["book_id"] == book_id else p
                 for p in self.picks
             ]
-        # Update the matching pick inside dashboard_curricula too.
         if self.dashboard_curricula:
             self.dashboard_curricula = [
                 {
@@ -271,6 +286,17 @@ class State(rx.State):
                     ],
                 } if c["id"] == curriculum_id else c
                 for c in self.dashboard_curricula
+            ]
+        if self.active_curriculum_list:
+            self.active_curriculum_list = [
+                {
+                    **c,
+                    "picks": [
+                        {**p, **fields} if p["book_id"] == book_id else p
+                        for p in c["picks"]
+                    ],
+                } if c["id"] == curriculum_id else c
+                for c in self.active_curriculum_list
             ]
 
     def _patch_progress(self, curriculum_id: int, book_id: str, **fields) -> None:
@@ -295,6 +321,77 @@ class State(rx.State):
         """Public event handler — wraps the actual loader so other handlers
         can refresh dashboard state without re-decorating."""
         self._load_dashboard_data()
+
+    @rx.event
+    def accept_curriculum(self):
+        """Mark the just-generated curriculum as the user's active one
+        and navigate to /dashboard for active tracking."""
+        if not self.curriculum_id:
+            return
+        self.active_curriculum_id = str(self.curriculum_id)
+        return rx.redirect("/dashboard")
+
+    @rx.event
+    def load_active_curriculum(self):
+        """Public event handler — wraps the loader so the per-pick handlers
+        can refresh the active curriculum without re-decorating."""
+        self._load_active_curriculum_data()
+
+    def _load_active_curriculum_data(self):
+        """Populate active_curriculum_list with the single curriculum
+        identified by active_curriculum_id (or empty if none set)."""
+        if not self.user_id or self.active_curriculum_id in ("", "0"):
+            self.active_curriculum_list = []
+            return
+        try:
+            target_id = int(self.active_curriculum_id)
+        except ValueError:
+            self.active_curriculum_list = []
+            return
+
+        with rx.session() as session:
+            row = session.exec(
+                select(CurriculumRow)
+                .where(CurriculumRow.id == target_id)
+                .where(CurriculumRow.user_id == self.user_id)
+            ).first()
+            if row is None:
+                self.active_curriculum_list = []
+                return
+
+            progress_rows = session.exec(
+                select(Progress).where(Progress.curriculum_id == row.id)
+            ).all()
+            statuses = [pr.status for pr in progress_rows]
+            summary = {
+                "total":       len(statuses),
+                "finished":    statuses.count("finished"),
+                "reading":     statuses.count("reading"),
+                "abandoned":   statuses.count("abandoned"),
+                "not_started": statuses.count("not_started"),
+            }
+
+            by_book = {pr.book_id: pr for pr in progress_rows}
+            picks = json.loads(row.picks_json)
+            for p in picks:
+                pr = by_book.get(p["book_id"])
+                p["status"]          = pr.status if pr else "not_started"
+                p["rating"]          = (pr.rating if pr and pr.rating else 0)
+                p["difficulty_felt"] = (pr.difficulty_felt if pr and pr.difficulty_felt else "")
+                p["comment"]         = (pr.comment if pr and pr.comment else "")
+
+            built = {
+                "id":           row.id,
+                "genre":        row.genre,
+                "time_to_read": row.time_to_read,
+                "difficulty":   row.difficulty,
+                "overall_arc":  row.overall_arc,
+                "created_at":   row.created_at.strftime("%b %d, %Y"),
+                "picks":        picks,
+                "summary":      summary,
+            }
+
+        self.active_curriculum_list = [built]
 
     @rx.event
     def more_like_this(self, curriculum_id: int, book_id: str):

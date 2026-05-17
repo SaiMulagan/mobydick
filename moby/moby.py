@@ -154,7 +154,10 @@ def pick_card(pick, curriculum_id) -> rx.Component:
         width="100%",
         style={
             "background_color": CARD_BG,
-            "border_left": f"4px solid {WINE}",
+            # inset shadow instead of border-left so the wine bar respects
+            # the card's rounded corners (border-left would extend past the
+            # radius and overhang at the top/bottom).
+            "box_shadow": f"inset 4px 0 0 {WINE}",
             "border_radius": "6px",
         },
     )
@@ -292,13 +295,27 @@ def survey_form() -> rx.Component:
                     },
                 ),
                 rx.foreach(State.picks, lambda p: pick_card(p, State.curriculum_id)),
-                rx.button(
-                    "Try another",
-                    on_click=State.reset_form,
-                    variant="outline",
-                    size="3",
+                rx.hstack(
+                    rx.button(
+                        "Accept this curriculum →",
+                        on_click=State.accept_curriculum,
+                        size="3",
+                        style={
+                            "background_color": WINE,
+                            "color": CREAM,
+                            "font_weight": "600",
+                            "letter_spacing": "0.04em",
+                        },
+                    ),
+                    rx.button(
+                        "Try another",
+                        on_click=State.reset_form,
+                        variant="outline",
+                        size="3",
+                        style={"color": WINE, "border_color": WINE},
+                    ),
+                    spacing="3",
                     margin_top="2",
-                    style={"color": WINE, "border_color": WINE},
                 ),
                 spacing="4",
                 width="100%",
@@ -340,8 +357,9 @@ def nav_bar(active: str) -> rx.Component:
         )
 
     return rx.hstack(
-        link("Generate", "/", "generate"),
-        link("Your curricula", "/dashboard", "dashboard"),
+        link("Generate",       "/",           "generate"),
+        link("Dashboard",      "/dashboard",  "dashboard"),
+        link("Your curricula", "/curricula",  "curricula"),
         spacing="6",
         padding="4",
         width="100%",
@@ -460,15 +478,20 @@ def curriculum_summary_card(c) -> rx.Component:
         width="100%",
         style={
             "background_color": CARD_BG,
-            "border_left": f"4px solid {WINE}",
+            # inset shadow instead of border-left so the wine bar respects
+            # the card's rounded corners (border-left would extend past the
+            # radius and overhang at the top/bottom).
+            "box_shadow": f"inset 4px 0 0 {WINE}",
             "border_radius": "6px",
         },
     )
 
 
-def dashboard() -> rx.Component:
+def curricula_history() -> rx.Component:
+    """The 'Your curricula' page — lists every curriculum the user has
+    generated, with the momentum widget on top."""
     return rx.box(
-        nav_bar(active="dashboard"),
+        nav_bar(active="curricula"),
         rx.center(
             rx.vstack(
                 rx.heading(
@@ -503,6 +526,78 @@ def dashboard() -> rx.Component:
     )
 
 
+def active_dashboard() -> rx.Component:
+    """The new 'Dashboard' tab — shows only the accepted active curriculum
+    with full check-in controls. Empty state nudges the user back to the
+    generate page if they haven't accepted anything yet."""
+    return rx.box(
+        nav_bar(active="dashboard"),
+        rx.center(
+            rx.vstack(
+                rx.heading(
+                    "Now reading",
+                    size="8",
+                    style={**DISPLAY_STYLE, "font_size": "44px"},
+                ),
+                rx.text(
+                    "Track your active curriculum. Status, ratings, and notes "
+                    "live-update the system's future recommendations.",
+                    size="3",
+                    style={
+                        "font_family": DISPLAY_FONT,
+                        "font_style": "italic",
+                        "color": WINE_SOFT,
+                        "margin_bottom": "16px",
+                    },
+                ),
+                rx.cond(
+                    State.active_curriculum_list.length() > 0,
+                    rx.foreach(State.active_curriculum_list, curriculum_summary_card),
+                    rx.vstack(
+                        rx.text(
+                            "No active curriculum yet.",
+                            style={
+                                "font_family": DISPLAY_FONT,
+                                "font_style": "italic",
+                                "font_size": "20px",
+                                "color": WINE,
+                            },
+                        ),
+                        rx.text(
+                            "Generate one on the Generate tab and click "
+                            "“Accept this curriculum” to start tracking it here.",
+                            size="3",
+                            style={"color": INK},
+                        ),
+                        rx.link(
+                            "Go to Generate →",
+                            href="/",
+                            style={
+                                "color": WINE,
+                                "font_weight": "700",
+                                "letter_spacing": "0.04em",
+                                "margin_top": "8px",
+                                "text_decoration": "none",
+                            },
+                        ),
+                        spacing="2",
+                        align="center",
+                        style={"margin_top": "32px"},
+                    ),
+                ),
+                spacing="4",
+                width="100%",
+                max_width="640px",
+                padding="6",
+            ),
+            min_height="80vh",
+            width="100%",
+        ),
+        on_mount=[State.hydrate_user, State.load_active_curriculum],
+        style=PAGE_STYLE,
+    )
+
+
 app = rx.App(
     theme=rx.theme(
         accent_color="ruby",
@@ -515,4 +610,5 @@ app = rx.App(
     ],
 )
 app.add_page(index, title="Moby Dicks")
-app.add_page(dashboard, route="/dashboard", title="Your curricula · Moby Dicks")
+app.add_page(active_dashboard, route="/dashboard", title="Dashboard · Moby Dicks")
+app.add_page(curricula_history, route="/curricula", title="Your curricula · Moby Dicks")
