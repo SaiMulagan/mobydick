@@ -16,6 +16,16 @@ GUIDELINES:
   more accessible entry points; later weeks build on them.
 - Every pick must come from the candidate pool. Use the EXACT book_id
   and title strings from the pool.
+- For the `author` field, use the actual author of the book — identify it
+  from the title using your training knowledge (e.g. "Anna Karenina" -> Leo
+  Tolstoy, "The Idiot" -> Fyodor Dostoevsky). NEVER write "Various Authors",
+  "Unknown", "Anonymous", or any placeholder. If you cannot confidently
+  identify a specific named author from the title, SKIP that candidate and
+  pick a different one with a clearly attributable author.
+- Skip generic anthology titles like "Selected Stories", "Complete Works",
+  "Collected Stories", "Complete Short Novels" unless the user explicitly
+  asked for an anthology — prefer specific named works with a single
+  identifiable author.
 - Honour the user's stated specifics. If they ask for "18th century"
   works, prefer the oldest works in the pool and disqualify clearly
   wrong-era books. If they ask for "philosophy" specifically, prefer
@@ -23,7 +33,8 @@ GUIDELINES:
 - Match the requested difficulty: "high" = challenging, "low" = casual.
 - `reason` is ONE concise sentence explaining why this book is in this slot.
   Keep it under 180 characters.
-- `week` is the 1-indexed week the user starts the book.
+- `week` MUST be unique across all 5 picks — use weeks 1, 2, 3, 4, 5 in
+  order. Never assign the same week number to two picks.
 - `overall_arc` is ONE-TO-TWO sentences on the curriculum's shape, under 250 characters.
 
 USER SURVEY:
@@ -40,8 +51,8 @@ def _format_candidate(row, idx):
     """
     One-line per candidate. Descriptions are intentionally OFF — they're
     ~200 tokens each and Goodreads descriptions are noisy. The shelf list +
-    title + year carries enough signal for Gemini to rank, and dropping
-    descriptions cuts ~5,000 input tokens per call (1-2 seconds faster).
+    title + year carries enough signal for Gemini to rank, and Gemini knows
+    the author of well-known works from its training data.
     """
     shelves = ", ".join(list(row.top_shelves)[:6])
     rating = f"{row.average_rating:.2f}" if row.average_rating is not None else "n/a"

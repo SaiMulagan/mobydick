@@ -296,6 +296,44 @@ class State(rx.State):
         can refresh dashboard state without re-decorating."""
         self._load_dashboard_data()
 
+    @rx.event
+    def more_like_this(self, curriculum_id: int, book_id: str):
+        """Pre-fill the survey from a finished pick and navigate back to the
+        generation page. The auto-exclude logic in pipeline.py will keep the
+        seed book itself out of the new pool, and _difficulty_bias_for will
+        adjust difficulty if past check-ins warrant it."""
+        seed_pick = None
+        seed_curriculum = None
+        for c in self.dashboard_curricula:
+            if c["id"] == curriculum_id:
+                seed_curriculum = c
+                for p in c["picks"]:
+                    if p["book_id"] == book_id:
+                        seed_pick = p
+                        break
+                break
+        if seed_pick is None or seed_curriculum is None:
+            return
+
+        # Goodreads shelves index on topics (russian-literature, magical-
+        # realism), not author names — so a bare "Leo Tolstoy" keyword
+        # matches almost nothing and the SQL falls back on broader signals
+        # like the Reddit tiebreaker, which surfaces megahits like 1984 and
+        # Frankenstein. Combining the original topic with the author gives
+        # the extractor both a strong topical anchor AND an author bias.
+        seed_topic = seed_curriculum["genre"]
+        seed_author = seed_pick["author"]
+        self.genre        = f"{seed_topic} like {seed_author}"
+        self.time_to_read = seed_curriculum["time_to_read"] or "evening read"
+        self.difficulty   = seed_curriculum["difficulty"] or "moderate"
+        self.already_read = ""
+        self.overall_arc  = ""
+        self.picks        = []
+        self.curriculum_id = 0
+        self.error        = ""
+
+        return rx.redirect("/")
+
     def _load_dashboard_data(self):
         """Populate dashboard_curricula + the four header stat counts.
         Called on /dashboard mount and after any status change (since

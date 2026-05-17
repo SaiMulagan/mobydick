@@ -133,6 +133,23 @@ def pick_card(pick, curriculum_id) -> rx.Component:
             ),
         ),
 
+        # ---- "More like this" — appears only on finished picks ----------
+        rx.cond(
+            pick["status"] == "finished",
+            rx.button(
+                "More like this →",
+                on_click=lambda: State.more_like_this(curriculum_id, pick["book_id"]),
+                variant="outline",
+                size="2",
+                style={
+                    "color": WINE,
+                    "border_color": WINE,
+                    "margin_top": "10px",
+                    "letter_spacing": "0.04em",
+                },
+            ),
+        ),
+
         size="3",
         width="100%",
         style={

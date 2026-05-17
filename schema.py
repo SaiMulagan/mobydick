@@ -53,3 +53,14 @@ class Curriculum(BaseModel):
     # Set by pipeline._persist / _try_cache after saving or loading from DB.
     # None when running without a user_id (e.g. CLI smoke tests).
     db_id: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _normalize_weeks(self):
+        # Gemini occasionally emits duplicate week numbers despite the prompt.
+        # Renumber 1..5 in the order it returned them — that order already
+        # reflects the model's intended difficulty progression.
+        weeks = [p.week for p in self.picks]
+        if len(set(weeks)) != len(weeks) or sorted(weeks) != [1, 2, 3, 4, 5]:
+            for i, pick in enumerate(self.picks, 1):
+                pick.week = i
+        return self
