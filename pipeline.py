@@ -18,7 +18,7 @@ from curriculum import generate_curriculum
 from db import Curriculum as CurriculumRow
 from db import Progress as ProgressRow
 from extract import extract_filters
-from schema import Curriculum, CurriculumPick
+from schema import Curriculum, CurriculumPick, PageRange
 
 POOL_SIZE = 25                # cost cap; tunable per cost analysis
 CACHE_TTL_DAYS = 7            # same-user same-survey reuses within this window
@@ -103,6 +103,78 @@ def _persist(
     result.db_id = new_id
 
 
+def _difficulty_bias_for(user_id: str) -> Optional[str]:
+    """Inspect the user's last 10 check-ins. Return 'easier' / 'harder' /
+    None depending on which direction recent difficulty_felt values lean."""
+    if not user_id:
+        return None
+    with rx.session() as session:
+        rows = session.exec(
+            select(ProgressRow.difficulty_felt)
+            .where(ProgressRow.user_id == user_id)
+            .where(ProgressRow.difficulty_felt.is_not(None))
+            .order_by(ProgressRow.updated_at.desc())
+            .limit(10)
+        ).all()
+    counts = {"too_easy": 0, "just_right": 0, "too_dense": 0}
+    for r in rows:
+        if r in counts:
+            counts[r] += 1
+    total = sum(counts.values())
+    if total < 2:
+        return None
+    if counts["too_dense"] / total >= 0.4:
+        return "easier"
+    if counts["too_easy"] / total >= 0.4:
+        return "harder"
+    return None
+
+
+def _hint_text(bias: Optional[str]) -> str:
+    """Prompt addendum for extract.py — biases Gemini's extraction."""
+    if bias == "easier":
+        return (
+            "USER PROFILE NOTE: This reader has marked multiple recent books "
+            "as 'too dense'. Bias the extracted `difficulty` one notch easier "
+            "than the literal request (high -> medium, medium -> low)."
+        )
+    if bias == "harder":
+        return (
+            "USER PROFILE NOTE: This reader has marked multiple recent books "
+            "as 'too easy'. Bias the extracted `difficulty` one notch harder "
+            "than the literal request (low -> medium, medium -> high)."
+        )
+    return ""
+
+
+# Maps for the deterministic Python-side override that follows extraction.
+_EASIER = {"high": "medium", "medium": "low", "low": "low"}
+_HARDER = {"low": "medium", "medium": "high", "high": "high"}
+
+
+def _apply_bias(filters, bias: Optional[str]):
+    """Deterministically enforce the bias after extraction.
+
+    Gemini's hint-following is best-effort; this guarantees the change
+    actually lands AND tightens page_range when 'easier', which is what
+    makes the difference visible in the candidate pool (the SQL filters
+    on page_range — long classics get excluded outright).
+    """
+    if bias is None:
+        return filters
+    if bias == "easier":
+        filters.difficulty = _EASIER[filters.difficulty]
+        # Trim long-book ceiling by ~30%, floor at min+50 to stay valid.
+        new_max = max(int(filters.page_range.max * 0.7),
+                      filters.page_range.min + 50)
+        filters.page_range = PageRange(
+            min=filters.page_range.min, max=new_max
+        )
+    elif bias == "harder":
+        filters.difficulty = _HARDER[filters.difficulty]
+    return filters
+
+
 def _titles_from_past_progress(user_id: str) -> list[str]:
     """Return titles of books this user has already engaged with across all
     past curricula — any status other than `not_started`. Used to auto-
@@ -169,12 +241,24 @@ def generate_for_survey(
         if cached:
             return cached
 
-    filters = extract_filters(genre, time_to_read, difficulty)
+    # Personalized difficulty bias from past check-ins. Two layers:
+    #   1) Soft nudge in the extraction prompt (Gemini may follow it).
+    #   2) Deterministic Python override after extraction — guarantees the
+    #      change lands AND tightens page_range, which is what actually
+    #      shifts the candidate pool at the SQL layer.
+    bias = _difficulty_bias_for(user_id) if user_id else None
+    filters = extract_filters(genre, time_to_read, difficulty, _hint_text(bias))
     if not filters.is_recognized_topic:
         raise ValueError(
             "We couldn't recognize that as a topic. Try something specific "
             "like 'Russian literature' or 'popular astrophysics'."
         )
+
+    # Enforce the bias deterministically — guarantees the page_range tightens
+    # so the SQL filter actually excludes the long classics from the pool,
+    # and the curation prompt below sees the adjusted difficulty.
+    filters = _apply_bias(filters, bias)
+
     rows = fetch_candidates(filters, exclude_titles=full_exclude_list)
     pool = rows[:POOL_SIZE]
     if not pool:
@@ -182,7 +266,9 @@ def generate_for_survey(
             "No matching books were found in the catalog. "
             "Try a broader genre or different keywords."
         )
-    result = generate_curriculum(genre, time_to_read, difficulty, pool)
+    # Pass the (possibly biased) extracted difficulty, not the raw user input
+    # — this is what propagates the calibration into the curation step.
+    result = generate_curriculum(genre, time_to_read, filters.difficulty, pool)
 
     if user_id:
         _persist(user_id, genre, time_to_read, difficulty, result)

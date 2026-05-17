@@ -1,7 +1,7 @@
 import asyncio
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TypedDict
 
 import reflex as rx
@@ -70,9 +70,11 @@ class State(rx.State):
     # Typed so rx.foreach can introspect nested keys like
     # c["summary"]["finished"] in templates.
     dashboard_curricula: list[DashboardCurriculum] = []
-    # Computed at the same time as dashboard_curricula for the header stat.
+    # Header stat counts. All derived from progress rows in one pass.
     dashboard_total_finished: int = 0
     dashboard_total_picks: int = 0
+    dashboard_total_reading: int = 0
+    dashboard_finished_this_week: int = 0
 
     # UI status
     is_loading: bool = False
@@ -295,14 +297,18 @@ class State(rx.State):
         self._load_dashboard_data()
 
     def _load_dashboard_data(self):
-        """Populate dashboard_curricula + the two header stat counts.
+        """Populate dashboard_curricula + the four header stat counts.
         Called on /dashboard mount and after any status change (since
         the summary counts depend on per-pick statuses)."""
         if not self.user_id:
             self.dashboard_curricula = []
             self.dashboard_total_finished = 0
             self.dashboard_total_picks = 0
+            self.dashboard_total_reading = 0
+            self.dashboard_finished_this_week = 0
             return
+
+        one_week_ago = datetime.utcnow() - timedelta(days=7)
 
         with rx.session() as session:
             curricula = session.exec(
@@ -313,7 +319,9 @@ class State(rx.State):
 
             built: list[dict] = []
             total_finished = 0
+            total_reading = 0
             total_picks = 0
+            finished_this_week = 0
             for c in curricula:
                 progress_rows = session.exec(
                     select(Progress).where(Progress.curriculum_id == c.id)
@@ -326,8 +334,16 @@ class State(rx.State):
                     "abandoned":   statuses.count("abandoned"),
                     "not_started": statuses.count("not_started"),
                 }
-                total_finished += summary["finished"]
-                total_picks    += summary["total"]
+                total_finished     += summary["finished"]
+                total_reading      += summary["reading"]
+                total_picks        += summary["total"]
+                # Recent-finish count for the "this week" momentum stat.
+                finished_this_week += sum(
+                    1 for pr in progress_rows
+                    if pr.status == "finished"
+                    and pr.finished_at is not None
+                    and pr.finished_at >= one_week_ago
+                )
 
                 # Hydrate the saved picks JSON with the latest progress.
                 by_book = {pr.book_id: pr for pr in progress_rows}
@@ -350,9 +366,11 @@ class State(rx.State):
                     "summary":       summary,
                 })
 
-        self.dashboard_curricula      = built
-        self.dashboard_total_finished = total_finished
-        self.dashboard_total_picks    = total_picks
+        self.dashboard_curricula          = built
+        self.dashboard_total_finished     = total_finished
+        self.dashboard_total_picks        = total_picks
+        self.dashboard_total_reading      = total_reading
+        self.dashboard_finished_this_week = finished_this_week
 
 
 def _attach_progress(result, user_id: str) -> list[dict]:

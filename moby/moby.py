@@ -351,6 +351,49 @@ def progress_pill(label: str, count, color: str) -> rx.Component:
     )
 
 
+def _momentum_stat(value, label: str, value_color: str = None) -> rx.Component:
+    """One large stat tile for the dashboard hero — big serif number on top,
+    small tracked-out label below. Matches the deck's slide-4 stat callouts."""
+    return rx.vstack(
+        rx.text(
+            value,
+            style={
+                "font_family": DISPLAY_FONT,
+                "font_style": "italic",
+                "font_weight": "700",
+                "font_size": "44px",
+                "color": value_color or WINE,
+                "line_height": "1",
+            },
+        ),
+        rx.text(
+            label,
+            style={
+                **LABEL_STYLE,
+                "font_size": "9px",
+                "color": WINE_SOFT,
+            },
+        ),
+        spacing="2",
+        align="center",
+    )
+
+
+def momentum_widget() -> rx.Component:
+    """Dashboard hero row: three side-by-side stats summarizing the user's
+    reading activity. Pure aggregates over progress rows already loaded
+    in _load_dashboard_data — no extra DB round-trips, no perf cost."""
+    return rx.hstack(
+        _momentum_stat(State.dashboard_total_finished, "Books finished"),
+        _momentum_stat(State.dashboard_total_reading, "In progress", WINE_SOFT),
+        _momentum_stat(State.dashboard_finished_this_week, "This week"),
+        spacing="6",
+        justify="center",
+        width="100%",
+        style={"margin_bottom": "24px"},
+    )
+
+
 def curriculum_summary_card(c) -> rx.Component:
     return rx.card(
         rx.hstack(
@@ -418,17 +461,7 @@ def dashboard() -> rx.Component:
                 ),
                 rx.cond(
                     State.dashboard_total_picks > 0,
-                    rx.text(
-                        State.dashboard_total_finished, " of ",
-                        State.dashboard_total_picks, " books finished across all curricula.",
-                        size="3",
-                        style={
-                            "font_family": DISPLAY_FONT,
-                            "font_style": "italic",
-                            "color": WINE_SOFT,
-                            "margin_bottom": "16px",
-                        },
-                    ),
+                    momentum_widget(),
                     rx.text(
                         "No curricula yet. Generate one on the home page to get started.",
                         size="3",

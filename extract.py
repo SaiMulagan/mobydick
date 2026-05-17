@@ -40,17 +40,25 @@ USER SURVEY:
 GENRE:      <<<{genre}>>>
 TIME:       <<<{time_to_read}>>>
 DIFFICULTY: <<<{difficulty}>>>
+
+{user_profile_hint}
 """
 
 _client = genai.Client(vertexai=True, project=GCP_PROJECT, location=GCP_REGION)
 
 
-def extract_filters(genre: str, time_to_read: str, difficulty: str) -> SurveyFilters:
+def extract_filters(
+    genre: str,
+    time_to_read: str,
+    difficulty: str,
+    user_profile_hint: str = "",
+) -> SurveyFilters:
     # Hard length cap defends against pasted-novella inputs and runaway cost.
     prompt = _PROMPT.format(
         genre=genre[:500],
         time_to_read=time_to_read[:500],
         difficulty=difficulty[:500],
+        user_profile_hint=user_profile_hint,
     )
     resp = _client.models.generate_content(
         model=GEMINI_MODEL,
