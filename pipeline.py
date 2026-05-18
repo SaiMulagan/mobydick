@@ -20,7 +20,9 @@ from db import Progress as ProgressRow
 from extract import extract_filters
 from schema import Curriculum, CurriculumPick, PageRange
 
-POOL_SIZE = 25                # cost cap; tunable per cost analysis
+POOL_SIZE = 15                # cost + latency cap; was 25, trimmed to cut
+                              # ~700 input tokens off the curation prompt
+                              # without measurably hurting selection quality
 CACHE_TTL_DAYS = 7            # same-user same-survey reuses within this window
 
 

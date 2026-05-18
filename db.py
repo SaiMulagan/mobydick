@@ -33,6 +33,10 @@ class Curriculum(rx.Model, table=True):
     overall_arc: str
     picks_json: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Soft-delete / archive flag. Clicking the trash icon on the In Progress
+    # tab sets this to True (the row moves to Finished but remains in the
+    # DB). Clicking trash on Finished hard-deletes the row.
+    is_archived: bool = Field(default=False)
 
 
 class Progress(rx.Model, table=True):

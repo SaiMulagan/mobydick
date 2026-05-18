@@ -1,7 +1,7 @@
 from google import genai
 from google.genai import types
 
-from config import GCP_PROJECT, GCP_REGION, GEMINI_MODEL
+from config import GCP_PROJECT, GCP_REGION, GEMINI_MODEL_FAST
 from schema import SurveyFilters
 
 _PROMPT = """\
@@ -61,7 +61,7 @@ def extract_filters(
         user_profile_hint=user_profile_hint,
     )
     resp = _client.models.generate_content(
-        model=GEMINI_MODEL,
+        model=GEMINI_MODEL_FAST,
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",

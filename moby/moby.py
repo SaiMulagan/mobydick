@@ -54,7 +54,25 @@ def pick_card(pick, curriculum_id) -> rx.Component:
         rx.text(
             pick["author"],
             size="3",
-            style={"font_style": "italic", "color": WINE_SOFT, "margin_bottom": "8px"},
+            style={"font_style": "italic", "color": WINE_SOFT},
+        ),
+        # "Reading for N days" / "Finished in N days" — visible only after
+        # the user has started or completed the book.
+        rx.cond(
+            pick["days_label"] != "",
+            rx.text(
+                pick["days_label"],
+                size="1",
+                style={
+                    "color": WINE,
+                    "font_weight": "700",
+                    "letter_spacing": "0.06em",
+                    "text_transform": "uppercase",
+                    "margin_top": "2px",
+                    "margin_bottom": "8px",
+                },
+            ),
+            rx.box(style={"margin_bottom": "8px"}),  # spacer when no label
         ),
         rx.text(pick["reason"], size="3", style={"color": INK, "line_height": "1.55"}),
 
@@ -193,7 +211,7 @@ def survey_form() -> rx.Component:
         rx.input(
             value=State.genre,
             on_change=State.set_genre,
-            placeholder="e.g. 18th century Russian literature",
+            placeholder="e.g. Japanese magical realism",
             size="3",
             width="100%",
         ),
@@ -249,13 +267,21 @@ def survey_form() -> rx.Component:
             rx.vstack(
                 rx.spinner(size="3", style={"color": WINE}),
                 rx.text(
-                    "Building your curriculum… this takes 5–15 seconds.",
+                    State.loading_stage,
                     size="2",
-                    style={"color": WINE_SOFT, "font_style": "italic"},
+                    style={
+                        "color": WINE_SOFT,
+                        "font_style": "italic",
+                        "text_align": "center",
+                    },
                 ),
                 align="center",
                 spacing="2",
                 margin_top="4",
+                # span the full parent width so align="center" actually
+                # centers within the form column (otherwise the vstack
+                # hugs its content and sits left-aligned).
+                width="100%",
             ),
         ),
 
@@ -298,7 +324,10 @@ def survey_form() -> rx.Component:
                 rx.hstack(
                     rx.button(
                         "Accept this curriculum →",
-                        on_click=State.accept_curriculum,
+                        # Lambda wrapper so Reflex doesn't try to pass the
+                        # PointerEventInfo into accept_curriculum's optional
+                        # curriculum_id parameter (which it expects to be int).
+                        on_click=lambda: State.accept_curriculum(),
                         size="3",
                         style={
                             "background_color": WINE,
@@ -386,6 +415,35 @@ def progress_pill(label: str, count, color: str) -> rx.Component:
     )
 
 
+def _progress_segment(pick) -> rx.Component:
+    """One segment of the curriculum progress bar — one per pick.
+    Solid wine = finished, diagonal wine stripes over cream = in progress,
+    dusty rose = abandoned, muted cream = not started."""
+    # "Reading" pattern: 45° wine diagonal stripes layered over the same
+    # muted-cream base used for not_started, so the tan shows through the
+    # gaps. The two backgrounds are stacked via the shorthand: the gradient
+    # paints on top, the cream is the fallback fill.
+    reading_stripes = (
+        f"repeating-linear-gradient(-45deg, "
+        f"{WINE} 0 3px, transparent 3px 8px), "
+        f"#E8DDC8"
+    )
+    return rx.box(
+        style={
+            "flex": "1",
+            "height": "10px",
+            "border_radius": "3px",
+            "background": rx.match(
+                pick["status"],
+                ("finished",  WINE),
+                ("reading",   reading_stripes),
+                ("abandoned", "#a06070"),
+                "#E8DDC8",  # not_started — muted cream
+            ),
+        },
+    )
+
+
 def _momentum_stat(value, label: str, value_color: str = None) -> rx.Component:
     """One large stat tile for the dashboard hero — big serif number on top,
     small tracked-out label below. Matches the deck's slide-4 stat callouts."""
@@ -449,18 +507,31 @@ def curriculum_summary_card(c) -> rx.Component:
             },
         ),
 
-        # Progress summary row
-        rx.hstack(
-            progress_pill("FINISHED", c["summary"]["finished"], WINE),
-            progress_pill("READING",  c["summary"]["reading"],  WINE_SOFT),
-            progress_pill("ABANDONED", c["summary"]["abandoned"], "#a06070"),
-            rx.spacer(),
-            rx.text(
-                c["summary"]["finished"], " / ", c["summary"]["total"], " books",
-                size="2",
-                style={"color": INK, "font_weight": "600"},
+        # ---- Segmented progress bar: one segment per pick, coloured by status
+        rx.vstack(
+            rx.hstack(
+                rx.foreach(c["picks"], _progress_segment),
+                spacing="2",
+                width="100%",
             ),
-            spacing="4",
+            rx.hstack(
+                rx.text(
+                    c["summary"]["finished"], " of ", c["summary"]["total"], " finished",
+                    size="2",
+                    style={"color": INK, "font_weight": "600"},
+                ),
+                rx.spacer(),
+                rx.cond(
+                    c["summary"]["reading"] > 0,
+                    rx.text(
+                        c["summary"]["reading"], " in progress",
+                        size="2",
+                        style={"color": WINE_SOFT, "font_style": "italic"},
+                    ),
+                ),
+                width="100%",
+            ),
+            spacing="2",
             width="100%",
             margin_top="3",
         ),
@@ -487,12 +558,130 @@ def curriculum_summary_card(c) -> rx.Component:
     )
 
 
+def _curricula_row(c) -> rx.Component:
+    """One collapsed-by-default accordion row for the /curricula list.
+
+    Trigger row: genre + (optional) ACTIVE badge + delete icon + date.
+    Same layout for both tabs so switching In progress ↔ Finished never
+    shifts columns.
+
+    Expanding shows the full curriculum_summary_card plus a 'Make this
+    active →' button when the row isn't already active. Delete lives in
+    the trigger's trash icon (not in the expanded content) and stops
+    propagation so it doesn't toggle the accordion."""
+    is_active = c["id"].to_string() == State.active_curriculum_id
+
+    return rx.accordion.item(
+        rx.accordion.header(
+            rx.accordion.trigger(
+                rx.hstack(
+                    rx.text(c["genre"], style={**LABEL_STYLE, "letter_spacing": "0.12em"}),
+                    rx.cond(
+                        is_active,
+                        rx.text(
+                            "✓ ACTIVE",
+                            style={
+                                **LABEL_STYLE,
+                                "font_size": "9px",
+                                "color": WINE,
+                                "margin_left": "8px",
+                            },
+                        ),
+                    ),
+                    rx.spacer(),
+                    # Delete: small trash icon. stop_propagation keeps the
+                    # click from also toggling the accordion. Shown on every
+                    # row (both tabs) so the layout doesn't shift.
+                    rx.button(
+                        rx.icon("trash-2", size=14),
+                        on_click=State.delete_curriculum(c["id"]).stop_propagation,
+                        variant="ghost",
+                        size="1",
+                        color_scheme="ruby",
+                        style={"padding": "4px", "min_width": "auto"},
+                        aria_label="Delete curriculum",
+                    ),
+                    rx.text(
+                        c["created_at"],
+                        size="2",
+                        style={"color": WINE_SOFT, "font_style": "italic"},
+                    ),
+                    rx.accordion.icon(),
+                    spacing="3",
+                    width="100%",
+                    align="center",
+                ),
+                # Kill the default hover background — the trash icon is now
+                # the affordance for any row-level action.
+                style={
+                    "_hover": {"background_color": "transparent"},
+                    "cursor": "pointer",
+                },
+            ),
+        ),
+        rx.accordion.content(
+            rx.vstack(
+                curriculum_summary_card(c),
+                rx.cond(
+                    ~is_active,
+                    rx.button(
+                        "Make this active →",
+                        on_click=lambda: State.accept_curriculum(c["id"]),
+                        size="3",
+                        style={
+                            "background_color": WINE,
+                            "color": CREAM,
+                            "font_weight": "600",
+                            "letter_spacing": "0.04em",
+                            "margin_top": "8px",
+                            "align_self": "flex-start",
+                        },
+                    ),
+                ),
+                spacing="3",
+                width="100%",
+            ),
+        ),
+        value=c["id"].to_string(),
+    )
+
+
+def _curricula_accordion(curricula_var, empty_msg: str) -> rx.Component:
+    """Helper: wrap a list of curricula in an accordion, or show the
+    given empty-state text if the list is empty."""
+    return rx.cond(
+        curricula_var.length() > 0,
+        rx.accordion.root(
+            rx.foreach(curricula_var, _curricula_row),
+            type="single",
+            collapsible=True,
+            width="100%",
+            variant="ghost",
+        ),
+        rx.text(
+            empty_msg,
+            size="3",
+            style={
+                "font_family": DISPLAY_FONT,
+                "font_style": "italic",
+                "color": WINE_SOFT,
+                "margin_top": "12px",
+            },
+        ),
+    )
+
+
 def curricula_history() -> rx.Component:
-    """The 'Your curricula' page — lists every curriculum the user has
-    generated, with the momentum widget on top."""
+    """The 'Your curricula' page — collapsed list of every curriculum the
+    user has generated. Click a row to expand the full detail. Each can be
+    promoted to the active /dashboard curriculum."""
     return rx.box(
         nav_bar(active="curricula"),
-        rx.center(
+        # rx.flex with align="start" anchors content to the top so switching
+        # tabs (which have different total heights) never re-centers the
+        # header/momentum widget vertically. min_height keeps the cream
+        # background filling the viewport.
+        rx.flex(
             rx.vstack(
                 rx.heading(
                     "Your curricula",
@@ -512,17 +701,141 @@ def curricula_history() -> rx.Component:
                         },
                     ),
                 ),
-                rx.foreach(State.dashboard_curricula, curriculum_summary_card),
+                rx.tabs.root(
+                    rx.tabs.list(
+                        rx.tabs.trigger(
+                            "In progress",
+                            value="active",
+                            style={
+                                "color": WINE,
+                                "font_weight": "600",
+                                "letter_spacing": "0.04em",
+                            },
+                        ),
+                        rx.tabs.trigger(
+                            "Finished",
+                            value="finished",
+                            style={
+                                "color": WINE,
+                                "font_weight": "600",
+                                "letter_spacing": "0.04em",
+                            },
+                        ),
+                    ),
+                    rx.tabs.content(
+                        _curricula_accordion(
+                            State.dashboard_curricula_active,
+                            empty_msg="No curricula in progress.",
+                        ),
+                        value="active",
+                    ),
+                    rx.tabs.content(
+                        _curricula_accordion(
+                            State.dashboard_curricula_finished,
+                            empty_msg="No finished curricula yet.",
+                        ),
+                        value="finished",
+                    ),
+                    default_value="active",
+                    width="100%",
+                ),
                 spacing="4",
                 width="100%",
                 max_width="640px",
                 padding="6",
             ),
+            align="start",      # anchor to top — no vertical re-centering
+            justify="center",   # still horizontally centered
             min_height="80vh",
             width="100%",
         ),
         on_mount=[State.hydrate_user, State.load_dashboard],
         style=PAGE_STYLE,
+    )
+
+
+def active_curriculum_view(c) -> rx.Component:
+    """Two-dimensional 'library-shelf' layout for the active curriculum,
+    used only on the Dashboard tab. The first pick spans the full width as
+    a featured card; the remaining four fill a 2×2 grid below. All five
+    picks render with the same `pick_card`, so every check-in control is
+    available in both the hero and the grid cells — only the spacing
+    changes via CSS grid-column."""
+    return rx.vstack(
+        # ---- Curriculum context — genre / arc / progress bar ------------
+        rx.hstack(
+            rx.text(c["genre"], style={**LABEL_STYLE, "letter_spacing": "0.12em"}),
+            rx.spacer(),
+            rx.text(c["created_at"], size="1", style={"color": WINE_SOFT}),
+            width="100%",
+        ),
+        rx.heading(
+            c["overall_arc"],
+            size="4",
+            style={
+                "font_family": DISPLAY_FONT,
+                "font_style": "italic",
+                "color": WINE_DARK,
+                "line_height": "1.25",
+                "margin_top": "4px",
+            },
+        ),
+        rx.vstack(
+            rx.hstack(
+                rx.foreach(c["picks"], _progress_segment),
+                spacing="2",
+                width="100%",
+            ),
+            rx.hstack(
+                rx.text(
+                    c["summary"]["finished"], " of ", c["summary"]["total"], " finished",
+                    size="2",
+                    style={"color": INK, "font_weight": "600"},
+                ),
+                rx.spacer(),
+                rx.cond(
+                    c["summary"]["reading"] > 0,
+                    rx.text(
+                        c["summary"]["reading"], " in progress",
+                        size="2",
+                        style={"color": WINE_SOFT, "font_style": "italic"},
+                    ),
+                ),
+                width="100%",
+            ),
+            spacing="2",
+            width="100%",
+            margin_top="3",
+        ),
+
+        # ---- Section divider + reading-list label -----------------------
+        rx.divider(
+            margin_y="4",
+            style={"background_color": WINE, "height": "1px", "opacity": "0.2"},
+        ),
+        rx.text("READING LIST", style={**LABEL_STYLE, "font_size": "10px"}),
+
+        # ---- 2D grid driven by picks_ordered: the hero (earliest "reading"
+        # else earliest "not_started" else lowest week) is at index 0 and
+        # spans both columns. The remaining picks fill the 2x2 below in
+        # their original week order. The progress bar above still uses
+        # the week-ordered `picks` so segments read left-to-right by week.
+        rx.grid(
+            rx.foreach(
+                c["picks_ordered"],
+                lambda p, idx: rx.box(
+                    pick_card(p, c["id"]),
+                    style={"grid_column": rx.cond(idx == 0, "1 / -1", "auto")},
+                ),
+            ),
+            columns="2",
+            spacing="3",
+            width="100%",
+            margin_top="2",
+        ),
+
+        spacing="3",
+        width="100%",
     )
 
 
@@ -537,22 +850,11 @@ def active_dashboard() -> rx.Component:
                 rx.heading(
                     "Now reading",
                     size="8",
-                    style={**DISPLAY_STYLE, "font_size": "44px"},
-                ),
-                rx.text(
-                    "Track your active curriculum. Status, ratings, and notes "
-                    "live-update the system's future recommendations.",
-                    size="3",
-                    style={
-                        "font_family": DISPLAY_FONT,
-                        "font_style": "italic",
-                        "color": WINE_SOFT,
-                        "margin_bottom": "16px",
-                    },
+                    style={**DISPLAY_STYLE, "font_size": "44px", "margin_bottom": "16px"},
                 ),
                 rx.cond(
                     State.active_curriculum_list.length() > 0,
-                    rx.foreach(State.active_curriculum_list, curriculum_summary_card),
+                    rx.foreach(State.active_curriculum_list, active_curriculum_view),
                     rx.vstack(
                         rx.text(
                             "No active curriculum yet.",
@@ -587,7 +889,9 @@ def active_dashboard() -> rx.Component:
                 ),
                 spacing="4",
                 width="100%",
-                max_width="640px",
+                # Wider than the other pages so the 2-column grid has room
+                # to breathe — picks render at ~420px each on desktop.
+                max_width="900px",
                 padding="6",
             ),
             min_height="80vh",
